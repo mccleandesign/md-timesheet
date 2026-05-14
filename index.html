@@ -4,194 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>McClean Timesheets</title>
-<!-- SheetJS (CSP-safe replacement for ExcelJS) -->
-<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
-<script>
-// ─── ExcelJS-compatible shim using SheetJS ────────────────────────
-// Mirrors the ExcelJS API surface used by this app so zero business
-// logic needs to change. Styling is captured and applied via SheetJS.
-(function(){
-  // ── ARGB → CSS colour (for future use / debugging) ──────────────
-  function argbToCss(argb){
-    if(!argb||argb.length<6)return'#000';
-    const hex=argb.length===8?argb.slice(2):argb;
-    return'#'+hex;
-  }
-
-  // ── Cell ─────────────────────────────────────────────────────────
-  class XCell {
-    constructor(row, colIdx) {
-      this._row = row;
-      this._col = colIdx; // 1-based
-      this.fill = null;
-      this.font = null;
-      this.alignment = null;
-      this.border = null;
-    }
-    // styleSub/styleGrand call getCell on a cell object too (noop path)
-    getCell(n){ return this; }
-    _addr(){
-      return XLSX.utils.encode_cell({r: this._row._rowIdx, c: this._col - 1});
-    }
-    _applyTo(ws){
-      const addr = this._addr();
-      if(!ws[addr]) ws[addr] = {t:'s', v:''};
-      const cell = ws[addr];
-      const s = {};
-      if(this.font){
-        s.font = {};
-        if(this.font.bold) s.font.bold = true;
-        if(this.font.italic) s.font.italic = true;
-        if(this.font.size) s.font.sz = this.font.size;
-        if(this.font.color && this.font.color.argb)
-          s.font.color = {rgb: this.font.color.argb.length===8 ? this.font.color.argb.slice(2) : this.font.color.argb};
-      }
-      if(this.fill && this.fill.fgColor && this.fill.fgColor.argb){
-        const rgb = this.fill.fgColor.argb.length===8 ? this.fill.fgColor.argb.slice(2) : this.fill.fgColor.argb;
-        s.fill = {patternType:'solid', fgColor:{rgb}};
-      }
-      if(this.alignment){
-        s.alignment = {};
-        if(this.alignment.horizontal) s.alignment.horizontal = this.alignment.horizontal;
-        if(this.alignment.vertical)   s.alignment.vertical   = this.alignment.vertical;
-        if(this.alignment.indent)     s.alignment.indent     = this.alignment.indent;
-      }
-      if(this.border){
-        s.border = {};
-        ['top','bottom','left','right'].forEach(side=>{
-          if(this.border[side]){
-            const b = this.border[side];
-            const rgb = b.color && b.color.argb ? (b.color.argb.length===8?b.color.argb.slice(2):b.color.argb) : '000000';
-            s.border[side] = {style: b.style||'thin', color:{rgb}};
-          }
-        });
-      }
-      if(Object.keys(s).length) cell.s = s;
-    }
-  }
-
-  // ── Row ──────────────────────────────────────────────────────────
-  class XRow {
-    constructor(ws, rowIdx, values){
-      this._ws = ws;          // XWorksheet
-      this._rowIdx = rowIdx;  // 0-based SheetJS row index
-      this.number = rowIdx + 1; // 1-based (ExcelJS .number)
-      this.height = null;
-      this._cells = {};       // col 1-based → XCell
-      if(values) this._setValues(values);
-    }
-    _setValues(values){
-      values.forEach((v,i)=>{
-        const cell = this.getCell(i+1);
-        cell._rawValue = v;
-      });
-    }
-    getCell(col){
-      if(!this._cells[col]) this._cells[col] = new XCell(this, col);
-      return this._cells[col];
-    }
-  }
-
-  // ── Worksheet ────────────────────────────────────────────────────
-  class XWorksheet {
-    constructor(name){
-      this.name = name;
-      this.columns = [];      // [{width}] — stored for colInfo
-      this._rows = [];        // XRow array in order added
-      this._nextRow = 0;      // 0-based SheetJS row index
-      this._merges = [];      // [{s:{r,c},e:{r,c}}]
-    }
-    addRow(values){
-      const row = new XRow(this, this._nextRow++, values||[]);
-      this._rows.push(row);
-      return row;
-    }
-    getRow(oneBasedN){
-      // Find existing row by 1-based number, or return a stub
-      const found = this._rows.find(r=>r.number===oneBasedN);
-      if(found) return found;
-      // Stub for height-only calls (e.g. ws.getRow(2).height=36)
-      const stub = {number:oneBasedN, height:null, _rowIdx:oneBasedN-1, _ws:this, _cells:{},
-        getCell(col){ if(!this._cells[col])this._cells[col]=new XCell(this,col); return this._cells[col]; }};
-      this._heightStubs = this._heightStubs||{};
-      this._heightStubs[oneBasedN] = stub;
-      return stub;
-    }
-    mergeCells(r1,c1,r2,c2){
-      this._merges.push({s:{r:r1-1,c:c1-1},e:{r:r2-1,c:c2-1}});
-    }
-    addImage(){ /* logo embed not supported in CSP env — silently ignored */ }
-    // Build the SheetJS worksheet object
-    _toSheetJS(){
-      const ws = {};
-      let maxR=0, maxC=0;
-      this._rows.forEach(row=>{
-        Object.values(row._cells).forEach(cell=>{
-          const r = cell._row._rowIdx;
-          const c = cell._col - 1;
-          if(r>maxR) maxR=r;
-          if(c>maxC) maxC=c;
-          const addr = XLSX.utils.encode_cell({r,c});
-          const v = cell._rawValue;
-          let t='s', val=v;
-          if(v===null||v===undefined||v===''){t='s';val='';}
-          else if(typeof v==='number'){t='n';val=v;}
-          else if(v instanceof Date){t='d';val=v;}
-          else{t='s';val=String(v);}
-          ws[addr]={t,v:val};
-          // Apply style
-          cell._applyTo(ws);
-        });
-      });
-      ws['!ref'] = XLSX.utils.encode_range({s:{r:0,c:0},e:{r:maxR,c:maxC}});
-      // Column widths
-      if(this.columns && this.columns.length){
-        ws['!cols'] = this.columns.map(col=>({wch: col.width||10}));
-      }
-      // Row heights
-      const rowH = {};
-      this._rows.forEach(row=>{ if(row.height) rowH[row._rowIdx]={hpt:row.height*0.75,hpx:row.height}; });
-      if(this._heightStubs){
-        Object.values(this._heightStubs).forEach(stub=>{ if(stub.height) rowH[stub._rowIdx]={hpt:stub.height*0.75,hpx:stub.height}; });
-      }
-      if(Object.keys(rowH).length) ws['!rows'] = rowH;
-      // Merges
-      if(this._merges.length) ws['!merges'] = this._merges;
-      return ws;
-    }
-  }
-
-  // ── Workbook ─────────────────────────────────────────────────────
-  class XWorkbook {
-    constructor(){
-      this.creator = 'McClean Design';
-      this._sheets = [];
-      this.worksheets = this._sheets; // ExcelJS .worksheets reference
-      this.xlsx = {
-        writeBuffer: async () => {
-          const wb = {SheetNames:[], Sheets:{}, Props:{Application:'McClean Design'}};
-          this._sheets.forEach(ws=>{
-            wb.SheetNames.push(ws.name);
-            wb.Sheets[ws.name] = ws._toSheetJS();
-          });
-          const wbout = XLSX.write(wb, {bookType:'xlsx', type:'array', cellStyles:true});
-          return wbout;
-        }
-      };
-    }
-    addWorksheet(name){
-      const ws = new XWorksheet(name);
-      this._sheets.push(ws);
-      this.worksheets = this._sheets;
-      return ws;
-    }
-    addImage(opts){ return 0; } // no-op, returns fake imageId
-  }
-
-  // ── Expose as global ExcelJS namespace ───────────────────────────
-  window.ExcelJS = { Workbook: XWorkbook };
-})();
-</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js" defer></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -649,6 +462,7 @@ tr:last-child td{border-bottom:none}
       <button class="btn" style="background:#e879f9;color:#fff" id="btnLifetime" onclick="compile('lifetime')">Compile Project Ledger</button>
     </div>
   </div>
+
 <div class="log-tabs"><div class="log-tab active">Activity Log</div></div>
   <div class="log-area" id="logArea"><div class="log-ph">Select a report and compile to see progress.</div></div>
   <div class="dl-banner" id="dlBanner">
@@ -723,6 +537,16 @@ tr:last-child td{border-bottom:none}
     <div style="margin-top:12px">
       <button class="add-btn" style="background:var(--surface2);border:1px solid var(--border);color:var(--text)" onclick="downloadProjectRef()">📋 Download Project Reference XLSX</button>
     </div>
+  </div>
+
+  <div class="admin-section">
+    <div class="admin-section-title">Push Project List to Timesheets</div>
+    <div class="admin-section-sub">Write the current active project list to the hidden Sheet2 in every staff workbook. The dropdown validation in all timesheet tabs pulls from there automatically.</div>
+    <div style="background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.2);border-radius:8px;padding:10px 12px;font-size:12px;color:var(--muted);margin-bottom:14px">
+      Overwrites column B of Sheet2 in each workbook with the active project names above. All timesheet tabs pick up the change immediately via their existing dropdown validation.
+    </div>
+    <button id="btnPushProjects" class="add-btn" style="background:var(--accent4);border:none;color:#fff;padding:8px 16px;font-size:13px" onclick="pushProjectList()">Push Project List to All Timesheets</button>
+    <div id="pushProjectLog" style="margin-top:12px;font-family:'DM Mono',monospace;font-size:11px;line-height:1.8;display:none"></div>
   </div>
 
   <div class="admin-section">
@@ -1838,9 +1662,9 @@ function tsFolder(yr){return '/sites/team/Shared Documents/Timesheets/'+yr+'/';}
 const TYPE_COLORS={payroll:'#4f8ef7',billing:'#7c5cfc',quarterly:'#f97316',annual:'#10b981',lifetime:'#e879f9',ledger:'#e879f9'};
 function fmt(d){return d.toISOString().slice(0,10)}
 function monthLabel(m){return['January','February','March','April','May','June','July','August','September','October','November','December'][m-1]}
-// Pay period epoch: 2026-01-03 (first Saturday of 2026 cycle)
-// Periods are bi-weekly Sat→Fri. All years stay phase-locked to this anchor.
-const PERIOD_EPOCH = new Date('2026-01-03');
+// Pay period epoch: 2025-12-27 (Saturday anchor for Sat→Fri bi-weekly cycle)
+// Produces periods ending May 15, May 29, Jun 12, etc. All years phase-locked to this anchor.
+const PERIOD_EPOCH = new Date('2025-12-27');
 
 function getPeriods(year) {
   // If no year given, return all periods for the current year
@@ -2212,16 +2036,24 @@ async function createNextPeriodTabs(currentPeriodEnd, staffList) {
   for (const s of staffList) {
     try {
       const file = `${SHAREPOINT}${folder}${s.name} - Timesheet.xlsx`;
-      // Verified workbook structure (Brian_Gardarian_-_Timesheet.xlsx):
-      //   Row 3: day-of-week labels in C3:P3 (Sa Su M Tu W Th F Sa Su M Tu W Th F)
-      //   Row 4: C4 = period start DATE VALUE; D4:P4 = formulas =C4+1, =D4+1 ... =O4+1
-      //   A6:A19 = project names, B6:B19 = phase 0-6, C6:P19 = daily hours, Q6:Q19 = row total formulas
-      //   A21=Holiday, A22=Vacation, A23=Sick; C21:P23 = HSV hours
-      //   C25:Q25 = daily/grand total formulas (DO NOT TOUCH)
-      //   A27:Q27 = expense column headers (DO NOT TOUCH)
-      //   A28:Q32 = expense data rows
-      //   P33 = TotalMiles formula, Q33 = TotalExpenses formula (DO NOT TOUCH)
-      //   R41 = SubmittedAt (written by external Office Script — just clear this cell)
+      // Verified workbook structure (Template - Timesheet.xlsx, updated May 2026):
+      //   Row 1:  "Employee:" label in A1; staff name in B1
+      //   Row 3:  Day-of-week labels in C3:P3 (Sa Su M Tu W Th F Sa Su M Tu W Th F)
+      //   Row 4:  C4 = period start DATE VALUE; D4:P4 = cascade formulas =C4+1 etc.
+      //   Row 5:  "Project Name" / "Phase" column headers
+      //   Rows 6-20:  Project name (A), phase (B), daily hours (C:P), row total (Q) — 15 rows
+      //   Row 21: blank separator
+      //   Rows 22-25: 4 more project rows — 20 total
+      //   Row 26: blank separator
+      //   Row 27: A27=Holiday, C27:P27 = hours
+      //   Row 28: A28=Vacation, C28:P28 = hours
+      //   Row 29: A29=Sick, C29:P29 = hours
+      //   Row 30: blank separator
+      //   Row 31: C31:Q31 = daily/grand total formulas (DO NOT TOUCH)
+      //   Row 32: "Reimbursable Expenses" section header
+      //   Row 33: Expense column headers (DO NOT TOUCH)
+      //   Rows 34-43: 10 expense data rows
+      //   Row 44: Miles (col 16) and Amount (col 17) totals — formulas (DO NOT TOUCH)
       //   The submit button is an EXTERNAL Office Script — NOT stored in the workbook.
       //   Do NOT touch any buttons, shapes, or controls.
       const prompt = `You are editing a SharePoint Excel workbook. Open the file at this URL: "${file}"
@@ -2236,25 +2068,25 @@ Copy the entire source tab (all cells, formulas, formatting, data validation, na
 
 STEP 3 — Make ONLY these changes in the new "${tabName}" tab:
 a) Cell C4: Set to the date ${nextStartStr} as a date value (not text). Cells D4:P4 contain formulas that cascade from C4 — do NOT touch those cells at all.
-b) Cells C6:P19: Clear values only (the daily hours grid). Do NOT touch column A (project names), column B (phase numbers), or column Q (row total formulas).
-c) Cells C21:P23: Clear values only (Holiday/Vacation/Sick hours). Do NOT touch column A labels.
-d) Cells A28:Q32: Clear all data in these five expense rows.
-e) Cell R41: Clear this cell (submit timestamp).
+b) Cells C6:P20 and C22:P25: Clear values only (the daily hours grid — 20 project rows split by a blank row 21). Do NOT touch column A (project names), column B (phase numbers), or column Q (row total formulas).
+c) Cells C27:P29: Clear values only (Holiday/Vacation/Sick hours). Do NOT touch column A labels.
+d) Cells A34:Q43: Clear all data in these ten expense rows.
+e) Cell R51: Clear this cell (submit timestamp).
 
 STEP 4 — Update sheet-scoped defined names to point to "${tabName}":
-EmployeeName   = '${tabName}'!$A$2
+EmployeeName   = '${tabName}'!$B$1
 PayPeriodStart = '${tabName}'!$C$4
-ProjectData    = '${tabName}'!$A$6:$Q$23
-ExpenseData    = '${tabName}'!$A$28:$Q$32
-GrandTotal     = '${tabName}'!$Q$25
-SubmittedAt    = '${tabName}'!$R$41
-TotalMiles     = '${tabName}'!$P$33
-TotalExpenses  = '${tabName}'!$Q$33
+ProjectData    = '${tabName}'!$A$6:$Q$25
+ExpenseData    = '${tabName}'!$A$34:$Q$43
+GrandTotal     = '${tabName}'!$Q$31
+SubmittedAt    = '${tabName}'!$R$51
+TotalMiles     = '${tabName}'!$P$44
+TotalExpenses  = '${tabName}'!$Q$44
 
 CRITICAL RULES — do NOT violate these:
 - Touch ONLY the cells listed in Step 3. No other cells.
-- Do NOT change or delete any formula in the workbook (Q6:Q19, C25:Q25, D4:P4, P33, Q33 must stay as formulas).
-- Do NOT alter data validation anywhere (the dropdown list on C28:D32 must stay).
+- Do NOT change or delete any formula in the workbook (Q6:Q25, C31:Q31, D4:P4, P44, Q44 must stay as formulas).
+- Do NOT alter data validation anywhere.
 - Do NOT modify any other tabs.
 - Do NOT add, remove, or modify any buttons, shapes, or form controls.
 - Save the workbook when done.`;
@@ -2280,6 +2112,109 @@ CRITICAL RULES — do NOT violate these:
   } else {
     log(`✓ All ${staffList.length} timesheets ready for ${tabName}`, 's');
   }
+}
+
+// ─── Push Project List ────────────────────────────────────────────
+// Writes the current active project list from cfg.projects into
+// column B of the hidden Sheet2 in every staff workbook.
+// Sheet2 is the master list that drives the data validation dropdown.
+async function pushProjectList() {
+  const btn = document.getElementById('btnPushProjects');
+  const logEl = document.getElementById('pushProjectLog');
+
+  const plog = (msg, type='') => {
+    logEl.style.display = 'block';
+    const colors = {s:'var(--success)', e:'var(--error)', i:'var(--accent)', w:'var(--warning)'};
+    logEl.innerHTML += `<div style="color:${colors[type]||'var(--text)'}">${msg}</div>`;
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+
+  // Reset log
+  logEl.innerHTML = '';
+  logEl.style.display = 'none';
+  btn.disabled = true;
+  btn.textContent = 'Pushing...';
+
+  const staffList = billableStaff();
+  if (!staffList.length) {
+    plog('No billable staff found.', 'e');
+    btn.disabled = false; btn.textContent = 'Push Project List to All Timesheets';
+    return;
+  }
+
+  const activeProjects = (cfg.projects || [])
+    .filter(p => p.active !== false)
+    .map(p => p.name);
+
+  if (!activeProjects.length) {
+    plog('No active projects found in Admin → Projects.', 'e');
+    btn.disabled = false; btn.textContent = 'Push Project List to All Timesheets';
+    return;
+  }
+
+  plog(`Pushing ${activeProjects.length} projects to ${staffList.length} workbooks...`, 'i');
+
+  if (isDemo) {
+    plog(`Demo: would overwrite Sheet2 column B in each workbook.`, 'w');
+    activeProjects.slice(0, 5).forEach((p, i) => plog(`  B${i + 1}: ${p}`));
+    if (activeProjects.length > 5) plog(`  ... and ${activeProjects.length - 5} more`);
+    btn.disabled = false; btn.textContent = 'Push Project List to All Timesheets';
+    return;
+  }
+
+  const rowInstructions = activeProjects
+    .map((name, i) => `B${i + 1}: "${name}"`)
+    .join('\n');
+  const clearFrom = activeProjects.length + 1;
+
+  const errors = [];
+  for (const s of staffList) {
+    try {
+      const yr = new Date().getFullYear();
+      const file = `${SHAREPOINT}${tsFolder(yr)}${s.name} - Timesheet.xlsx`;
+      const prompt = `You are editing a SharePoint Excel workbook. Open the file at this URL: "${file}"
+
+TASK: Update the project list on the hidden sheet named "Sheet2".
+
+Sheet2 column B is the master project list that drives dropdown validation across all timesheet tabs. Replace its contents with the following list, one project per row starting at B1:
+
+${rowInstructions}
+
+After writing the list, clear any remaining rows from B${clearFrom} downward that may contain old project names (clear until you hit 5 consecutive empty cells).
+
+CRITICAL RULES:
+- Work ONLY on Sheet2, column B. Do NOT touch column A (staff names), column C (phases), or any other column.
+- Do NOT modify any timesheet tabs.
+- Do NOT alter any formulas, data validation rules, formatting, or named ranges.
+- Do NOT add, remove, or modify any buttons, shapes, or form controls.
+- Save the workbook when done.`;
+
+      const resp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514', max_tokens: 1000,
+          mcp_servers: [{type:'url', url:'https://microsoft365.mcp.claude.com/mcp', name:'m365'}],
+          messages: [{role:'user', content: prompt}]
+        })
+      });
+      const data = await resp.json();
+      if (data.error) { errors.push(`${s.name}: ${data.error.message || 'API error'}`); plog(`  ✗ ${s.name}`, 'e'); continue; }
+      plog(`  ✓ ${s.name}`, 's');
+      await sleep(200);
+    } catch(e) {
+      errors.push(`${s.name}: ${e.message}`);
+      plog(`  ✗ ${s.name}: ${e.message}`, 'e');
+    }
+  }
+
+  if (errors.length) {
+    plog(`⚠ ${errors.length} workbook(s) had issues.`, 'w');
+  } else {
+    plog(`✓ Done — project list pushed to all ${staffList.length} workbooks.`, 's');
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'Push Project List to All Timesheets';
 }
 
 // ─── Teams Reminder Scheduler ──────────────────────────────────────
@@ -2796,7 +2731,7 @@ async function readAPI(pe,ps,sl){
   const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:8000,
       system:'Extract timesheet data from SharePoint Excel files. Return ONLY valid JSON array.',
-      messages:[{role:'user',content:`Read SharePoint files from ${SHAREPOINT}. Open tab "${pe}": A2=name,R41=submit timestamp,Q25=total hours,rows 6-19 colA=project colB=phase(0-6) colsC-P=hours (start ${ps}),rows 21-23 HSV,rows 28-32 expenses(A=project,B=date,C=cat,D=desc,P=miles,Q=amt). Phase:${JSON.stringify(PHASES)} Accounts:${JSON.stringify(getProjectLookup())}\nFiles:\n${files}\nReturn:[{staff,periodEnd:"${pe}",submitted,submittedAt,totalHours,hourEntries:[{date,project,phase,account,hours}],hsvEntries:[{date,category,hours}],expenseEntries:[{date,project,category,description,miles,amount}]}]`}],
+      messages:[{role:'user',content:`Read SharePoint files from ${SHAREPOINT}. Open tab "${pe}": A2=name,R51=submit timestamp,Q31=total hours,rows 6-25 colA=project colB=phase(0-6) colsC-P=daily hours (period start ${ps}; skip blank rows),rows 27-29 HSV (A27=Holiday A28=Vacation A29=Sick colsC-P=hours),rows 34-43 expenses(A=project,B=date,C=category,E=description,P=miles,Q=amount). Phase:${JSON.stringify(PHASES)} Accounts:${JSON.stringify(getProjectLookup())}\nFiles:\n${files}\nReturn:[{staff,periodEnd:"${pe}",submitted,submittedAt,totalHours,hourEntries:[{date,project,phase,account,hours}],hsvEntries:[{date,category,hours}],expenseEntries:[{date,project,category,description,miles,amount}]}]`}],
       mcp_servers:[{type:'url',url:'https://microsoft365.mcp.claude.com/mcp',name:'microsoft365'}]})});
   const d=await r.json();if(!d.content)throw new Error(d.error?.message||'API error');
   return JSON.parse(d.content.filter(c=>c.type==='text').map(c=>c.text).join('').replace(/```json|```/g,'').trim());
